@@ -1,0 +1,118 @@
+import csv
+import math
+from pathlib import Path
+from django.conf import settings
+from django.test import TestCase
+from rest_framework.test import APIClient
+from core.models import Product
+
+
+class ForecastAndReorderTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.forecast_path = settings.BASE_DIR / "ml" / "forecast.csv"
+        self.lead_times_path = settings.DATA_DIR / "lead_times.csv"
+
+        # Ensure a forecast SKU exists in DB
+        self.fsku = "FIL-1016"
+        self.product = Product.objects.create(
+            sku=self.fsku,
+            name="Air Filter Element",
+            category="Filters",
+            brand="Elofic",
+            vehicle_fitment="Bajaj Pulsar 150",
+            price="450.00",
+            stock=20,
+        )
+
+    def test_forecast_file_schema_and_rows(self):
+        self.assertTrue(self.forecast_path.exists(), "ml/forecast.csv must exist")
+
+        with open(self.forecast_path, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            fieldnames = list(reader.fieldnames)
+            self.assertEqual(fieldnames[:3], ["sku", "week_start", "forecast_units"])
+            rows = list(reader)
+
+        self.assertEqual(len(rows), 160, "ml/forecast.csv must contain exactly 160 rows")
+
+        lead_skus = set(r["sku"].strip() for r in csv.DictReader(open(self.lead_times_path, encoding="utf-8")))
+        self.assertEqual(len(lead_skus), 40)
+
+        expected_weeks = ["2026-09-28", "2026-10-05", "2026-10-12", "2026-10-19"]
+        seen_pairs = set()
+
+        for r in rows:
+            sku = r["sku"]
+            w = r["week_start"]
+            u = float(r["forecast_units"])
+
+            self.assertIn(sku, lead_skus)
+            self.assertIn(w, expected_weeks)
+            self.assertGreaterEqual(u, 0.0, "forecast_units must be non-negative")
+            self.assertNotIn((sku, w), seen_pairs, "Duplicate SKU-week pair found")
+            seen_pairs.add((sku, w))
+
+        self.assertEqual(len(seen_pairs), 160)
+
+    def test_get_forecast_endpoint(self):
+        res = self.client.get(f"/api/forecast/{self.fsku}/")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+
+        self.assertEqual(data["sku"], self.fsku)
+        self.assertEqual(len(data["forecast"]), 4)
+
+        weeks = [item["week_start"] for item in data["forecast"]]
+        self.assertEqual(weeks, ["2026-09-28", "2026-10-05", "2026-10-12", "2026-10-19"])
+
+        # Unknown / non-forecast SKU -> 404 NOT_FOUND
+        res_404 = self.client.get("/api/forecast/NON-EXISTENT-SKU/")
+        self.assertEqual(res_404.status_code, 404)
+        self.assertEqual(res_404.json()["error"]["code"], "NOT_FOUND")
+
+    def test_reorder_suggestions_endpoint(self):
+        res = self.client.get("/api/reorder-suggestions/")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+
+        self.assertIn("results", data)
+        results = data["results"]
+        self.assertEqual(len(results), 40, "Must return exactly 40 reorder suggestion items")
+
+        first = results[0]
+        for field in ("sku", "current_stock", "lead_time_weeks", "lead_time_demand", "safety_stock", "reorder_point", "reorder_qty"):
+            self.assertIn(field, first)
+
+        self.assertIsInstance(first["current_stock"], int)
+        self.assertIsInstance(first["lead_time_weeks"], int)
+        self.assertIsInstance(first["safety_stock"], int)
+        self.assertIsInstance(first["reorder_qty"], int)
+        self.assertGreaterEqual(first["reorder_qty"], 0)
+
+        # Verify formula consistency
+        self.assertAlmostEqual(first["reorder_point"], round(first["lead_time_demand"] + first["safety_stock"], 1))
+        expected_qty = max(0, math.ceil(first["reorder_point"] - first["current_stock"]))
+        self.assertEqual(first["reorder_qty"], expected_qty)
+
+    def test_reorder_suggestions_reacts_to_live_stock(self):
+        # Initial call
+        res1 = self.client.get("/api/reorder-suggestions/").json()
+        item1 = next(it for it in res1["results"] if it["sku"] == self.fsku)
+        initial_stock = item1["current_stock"]
+
+        # Update inventory to 500 (ample stock)
+        self.client.put(f"/api/inventory/{self.fsku}/", {"quantity": 500, "reason": "Restocked"}, format="json")
+
+        res2 = self.client.get("/api/reorder-suggestions/").json()
+        item2 = next(it for it in res2["results"] if it["sku"] == self.fsku)
+        self.assertEqual(item2["current_stock"], 500)
+        self.assertEqual(item2["reorder_qty"], 0)
+
+        # Update inventory to 0 (stockout)
+        self.client.put(f"/api/inventory/{self.fsku}/", {"quantity": 0, "reason": "Stockout"}, format="json")
+
+        res3 = self.client.get("/api/reorder-suggestions/").json()
+        item3 = next(it for it in res3["results"] if it["sku"] == self.fsku)
+        self.assertEqual(item3["current_stock"], 0)
+        self.assertEqual(item3["reorder_qty"], math.ceil(item3["reorder_point"]))
