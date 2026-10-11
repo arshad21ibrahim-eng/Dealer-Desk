@@ -1,130 +1,198 @@
 Track: aiml
 
-# Deals and Dealers — VIKMO DealerDesk Take-Home Assignment
+# Deals and Dealers — VIKMO DealerDesk
 
-Deals and Dealers is an enterprise dealership management and parts intelligence platform built for the VIKMO DealerDesk take-home assignment on the **AI / ML track (`aiml`)**.
+Deals and Dealers is an AI/ML-track implementation of the VIKMO DealerDesk take-home assignment. It provides a Django REST API for catalogue, inventory, dealers, and draft orders; a Groq-powered dealer assistant using native LLM tool calling; and demand forecasts with live-stock-based reorder suggestions.
 
----
+The API contract is authoritative for endpoint paths, field names, validation, error codes, forecast dates, and reorder calculations. See [`API_CONTRACT.md`](API_CONTRACT.md).
 
-## 1. Track Scope and Implementation Status
+## Contents
 
-Per the assignment specification for Track `aiml`, the scope focuses on backend correctness, native LLM tool calling, and chronological demand forecasting:
+- [Track scope](#track-scope)
+- [Technology stack](#technology-stack)
+- [Project data](#project-data)
+- [Environment configuration](#environment-configuration)
+- [Setup and run](#setup-and-run)
+- [API overview](#api-overview)
+- [Forecasting and reorder logic](#forecasting-and-reorder-logic)
+- [Verification and tests](#verification-and-tests)
+- [Security notes](#security-notes)
+- [Submission video](#submission-video)
 
-| Component | Status | Details |
+## Track scope
+
+The `aiml` track requires A1, C, and D. Optional components are intentionally out of scope so the required work remains the priority.
+
+| Component | Status | Summary |
 |---|---|---|
-| **A1 — Backend Core** | **Implemented** | Relational PostgreSQL schema, Product catalogue (600 items), Inventory adjustments, Dealer management (25 dealers), DRAFT order creation with tax & validation, uniform contract error formatting, and idempotent `seed_data`. |
-| **C — Dealer Assistant** | **Implemented** | Conversational parts assistant with genuine native LLM tool/function calling (`search_parts`, `check_stock`, `create_draft_order`), live database stock/price grounding, multi-turn session isolation, and untrusted data prompt-injection defense. |
-| **D — Forecasting & Reorder** | **Implemented** | Chronological rolling-origin backtested demand forecasting for 40 SKUs across the 4 contract weeks (`ml/forecast.csv`, 160 rows), and `GET /api/reorder-suggestions/` using live stock and contract formula. |
-| **A2 — Order Confirmation Engine** | *Not Attempted* | Optional for `aiml` track per contract §2. |
-| **B — Supplier Sync** | *Not Attempted* | Optional for `aiml` track per contract §2. |
-| **E — Frontend UI** | *Not Attempted* | Optional for `aiml` track per brief. |
+| **A1 — Backend Core** | Implemented | Products, inventory, dealers, draft orders, validation, pagination, consistent error responses, and repeatable `seed_data`. |
+| **C — Dealer Assistant** | Implemented | Groq native tool calling with `search_parts`, `check_stock`, and `create_draft_order`; live database grounding for stock and prices; session memory and isolation; and protections against instructions embedded in untrusted catalogue data. |
+| **D — Forecasting and Reorder** | Implemented | Forecasts for 40 SKUs over the four contract weeks, historical validation, `ml/forecast.csv` with 160 rows, forecast endpoints, and reorder suggestions based on live stock. |
+| **A2 — Order Confirmation Engine** | Optional; not attempted | Optional for the `aiml` track. |
+| **B — Supplier Sync** | Optional; not attempted | Optional for the `aiml` track. |
+| **E — Frontend UI** | Optional; not attempted | Optional for the `aiml` track. |
 
----
+## Technology stack
 
-## 2. Technical Stack and Environment
+- **Language:** Python 3.11+
+- **Backend:** Django (`>=4.2,<6` per `requirements.txt`; locally tested with Django 5.2.18), Django REST Framework (`>=3.15`)
+- **Database:** PostgreSQL (hosted Neon PostgreSQL used for development). SQLite is not supported by the assignment.
+- **LLM provider:** Groq, using `GROQ_API_KEY` and the configured model `openai/gpt-oss-120b`.
+- **LLM integration:** HTTP requests to Groq's OpenAI-compatible chat-completions API with native tool/function calling.
+- **Forecasting:** Python-based chronological rolling-origin backtesting and a reproducible forecast-generation script.
+- **Timezone:** `Asia/Kolkata`
+- **Money:** `Decimal`-based calculations and two-decimal string serialization, as required by the contract.
 
-* **Language & Framework:** Python 3.11+, Django 5.2+, Django REST Framework 3.15+
-* **Database:** PostgreSQL only (tested on hosted Neon PostgreSQL; SQLite is prohibited)
-* **Time Zone:** `Asia/Kolkata`
-* **Currency:** Indian Rupee (INR) with pure Decimal 2-decimal string representation (`"1459.50"`)
-* **LLM Provider:** Groq (`openai/gpt-oss-120b` or `llama-3.3-70b-versatile`) / Google Gemini (`gemini-1.5-flash`) / OpenAI (`gpt-4o-mini`) / Anthropic (`claude-3-5-haiku-20241022`). Native function calling over HTTP using standard schemas.
+## Project data
 
-### Required Environment Variables
+The supplied `data/` directory is retained with its original files:
 
-Documented in `.env.example`:
-```bash
-# Database connection string (PostgreSQL only)
-DATABASE_URL=postgres://user:pass@host:5432/dealerdesk
+| File | Purpose |
+|---|---|
+| `catalogue.csv` | 600 catalogue products and starting stock |
+| `dealers.csv` | 25 dealers |
+| `sales_history.csv` | Historical weekly sales for the forecast SKUs |
+| `promo_calendar.csv` | Known promotional periods for the forecast horizon |
+| `lead_times.csv` | Supplier lead times for the 40 forecast SKUs |
+| `festival_calendar.csv` | Diwali dates used for seasonal features |
 
-# Django Secret Key & Debug
-DJANGO_SECRET_KEY=dev-only-secret-key
+The forecast output is committed at `ml/forecast.csv` with columns `sku`, `week_start`, and `forecast_units`.
+
+## Environment configuration
+
+Python dependencies and settings are loaded from the project environment. Start by copying `.env.example` to `.env` and editing the local values. Never commit `.env` or real credentials.
+
+Example `.env` values (placeholders only):
+
+```dotenv
+# Required: use the PostgreSQL connection string for your database.
+DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DATABASE?sslmode=require
+
+# Generate a private random value for your local environment.
+DJANGO_SECRET_KEY=replace-with-a-long-random-secret
 DJANGO_DEBUG=0
 
-# Supplier API (Optional for aiml track)
+# Required for the configured Groq assistant.
+GROQ_API_KEY=replace-with-your-groq-api-key
+
+# Optional for the aiml track; used only if you work on supplier sync.
 SUPPLIER_API_URL=http://127.0.0.1:8099
 SUPPLIER_API_KEY=dev-supplier-key
-
-# LLM Provider Key (set one of the following; the grader provides its own key)
-GEMINI_API_KEY=
-GROQ_API_KEY=
-OPENAI_API_KEY=
-ANTHROPIC_API_KEY=
 ```
 
----
+`DATABASE_URL`, `DJANGO_SECRET_KEY`, and `GROQ_API_KEY` must be configured for a normal local run. Use the actual PostgreSQL URL issued by your provider. Do not use the example credentials literally.
 
-## 3. Installation and Setup
+## Setup and run
 
-### A. Clone and Install Dependencies
+Run commands from the repository root, where `manage.py`, `requirements.txt`, and `API_CONTRACT.md` are located.
+
+### 1. Create a virtual environment
+
+**Windows PowerShell:**
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+If PowerShell blocks activation scripts, either allow activation only in the current session with `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force`, or use the environment's Python executable directly as shown below.
+
+**Linux/macOS:**
+
 ```bash
-python -m venv .venv
-source .venv/bin/activate       # On Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+python3 -m venv .venv
+source .venv/bin/activate
 ```
 
-### B. Environment Configuration
-Copy `.env.example` to `.env` and configure `DATABASE_URL` and your LLM provider key:
+### 2. Install dependencies
+
+With the virtual environment activated:
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+Without activation on Windows, use:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+### 3. Configure the environment
+
+Copy `.env.example` to `.env`, then set the real `DATABASE_URL`, `DJANGO_SECRET_KEY`, and `GROQ_API_KEY` values. Keep `.env` local and private.
+
+Windows PowerShell:
+
+```powershell
+Copy-Item .env.example .env
+notepad .env
+```
+
+Linux/macOS:
+
 ```bash
 cp .env.example .env
 ```
 
-### C. Database Migration & Seeding
+### 4. Check configuration, migrate, and seed
+
 ```bash
+python manage.py check
 python manage.py migrate --noinput
 python manage.py seed_data
-python manage.py seed_data       # Safe to run repeatedly; verified zero duplicates
+python manage.py seed_data
 ```
 
-### D. Run Application (Grader Command)
+`seed_data` is intended to be safe to run more than once without duplicate catalogue products or dealers.
+
+### 5. Start the development server
+
 ```bash
 python manage.py runserver 0.0.0.0:8000 --noreload
 ```
 
----
+The API is then available at `http://localhost:8000/`. The Django development server is for local development and testing, not production deployment.
 
-## 4. Verification and Test Results
+## API overview
 
-### A. Automated Django Test Suite Against PostgreSQL
-```bash
-python manage.py test core --keepdb
+The exact request and response schemas are in `API_CONTRACT.md`. The main required endpoints include:
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/api/health/` | Health check |
+| `GET` | `/api/products/` | Paginated product catalogue with supported filters |
+| `POST` | `/api/products/` | Create a product; stock starts at zero |
+| `GET` | `/api/products/{sku}/` | Retrieve one product and current stock |
+| `PATCH` | `/api/products/{sku}/` | Update supported product fields |
+| `PUT` | `/api/inventory/{sku}/` | Set the available inventory quantity |
+| `GET` | `/api/dealers/` | Paginated dealer list |
+| `POST` | `/api/dealers/` | Create a dealer |
+| `GET` | `/api/dealers/{id}/` | Retrieve one dealer |
+| `POST` | `/api/orders/` | Create a DRAFT order |
+| `GET` | `/api/orders/` | Paginated order list with supported filters |
+| `GET` | `/api/orders/{order_number}/` | Retrieve an order |
+| `POST` | `/api/assistant/chat/` | Chat with the dealer assistant |
+| `GET` | `/api/forecast/{sku}/` | Retrieve four forecast values for a forecast SKU |
+| `GET` | `/api/reorder-suggestions/` | Return reorder suggestions for the 40 forecast SKUs |
+
+Errors follow the contract's shared structure:
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Human-readable error message",
+    "details": []
+  }
+}
 ```
-**Result:** 37/37 tests passed (OK).
-* 13 tests for A1 core endpoints, validation errors, duplicate keys (409), price validations, and idempotency.
-* 16 tests for C assistant tools, multi-step LLM tool-calling loops, session isolation, session memory, mojibake normalization, provider resilience, and prompt injection defense.
-* 8 tests for D forecast schema, 160-row count, 4-week date horizon, exact CSV parity, non-forecast 404, live-stock reorder suggestions, and exact contract formula.
 
-### B. Smoke Test Verification
-```bash
-python smoke_test.py --base-url http://localhost:8000 --track aiml
-```
-**Result:** 10/10 checks passed:
-* `[PASS]` GET /api/health/
-* `[PASS]` GET /api/products/ (pagination, fields, 600 seeded)
-* `[PASS]` GET /api/products/{sku}/ and 404 error shape
-* `[PASS]` Dealers: list (25 seeded) and create
-* `[PASS]` PUT /api/inventory/{sku}/
-* `[PASS]` POST /api/orders/ creates a DRAFT (shape, money format)
-* `[PASS]` Validation error shape (empty items)
-* `[PASS]` POST /api/assistant/chat/ (response shape only)
-* `[PASS]` ml/forecast.csv (columns, 160 rows, weeks)
-* `[PASS]` GET /api/forecast/{sku}/ and /api/reorder-suggestions/ (shape only)
+### Example: product detail
 
-### C. Forecast Generation Command
-To regenerate and backtest the forecast model:
-```bash
-python ml/generate_forecast.py
-```
-**Backtest Metrics (Chronological Rolling-Origin Backtests across 3 horizons):**
-* Baseline 1 (Last Value): WAPE = 32.88%, MAE = 11.45, RMSE = 17.64
-* Baseline 2 (Recent 4-Wk Avg): WAPE = 26.80%, MAE = 9.34, RMSE = 14.50
-* Baseline 3 (Same Wk Last Year): WAPE = 32.88%, MAE = 11.45, RMSE = 17.70
-* Proposed Decomposition + Promo Uplift + Festival: **WAPE = 20.06%, MAE = 6.99, RMSE = 9.94**
+`GET /api/products/BRK-1044/`
 
----
-
-## 5. Verified Endpoint Examples
-
-### 1. Product Detail (`GET /api/products/BRK-1044/`)
 ```json
 {
   "sku": "BRK-1044",
@@ -138,41 +206,31 @@ python ml/generate_forecast.py
 }
 ```
 
-### 2. Create Draft Order (`POST /api/orders/`)
-**Request:**
+Values in this example illustrate the response shape; live values depend on the current database.
+
+### Example: create a draft order
+
+`POST /api/orders/`
+
+Request:
+
 ```json
 {
   "dealer_id": 7,
-  "items": [{"sku": "BRK-1044", "quantity": 3}]
-}
-```
-**Response (201 Created):**
-```json
-{
-  "order_number": "ORD-20261011-0001",
-  "dealer_id": 7,
-  "status": "DRAFT",
   "items": [
-    {
-      "sku": "BRK-1044",
-      "name": "Brake Pad Set - Bajaj Pulsar 150",
-      "quantity": 3,
-      "unit_price": "1459.50",
-      "line_subtotal": "4378.50",
-      "line_tax": "788.13",
-      "line_total": "5166.63"
-    }
-  ],
-  "subtotal": "4378.50",
-  "tax_total": "788.13",
-  "grand_total": "5166.63",
-  "created_at": "2026-10-11T18:03:43+05:30",
-  "updated_at": "2026-10-11T18:03:43+05:30"
+    {"sku": "BRK-1044", "quantity": 3}
+  ]
 }
 ```
 
-### 3. Dealer Assistant (`POST /api/assistant/chat/`)
-**Request:**
+A successful response is `201 Created` with a `DRAFT` order, current catalogue prices, line subtotals, GST, and totals formatted as decimal strings. Creating a draft order does not deduct stock.
+
+### Example: dealer assistant
+
+`POST /api/assistant/chat/`
+
+Request:
+
 ```json
 {
   "session_id": "session-dealer-7",
@@ -180,49 +238,109 @@ python ml/generate_forecast.py
   "message": "Do you have brake pads for a Pulsar 150?"
 }
 ```
-**Response (200 OK):**
-```json
-{
-  "reply": "Yes, we have the Endurance Brake Pad Set (BRK-1044) for Bajaj Pulsar 150 in stock. Current price is ₹1459.50 with 136 units available.",
-  "cited_skus": ["BRK-1044"],
-  "tool_calls": [
-    {"name": "search_parts", "arguments": {"query": "brake pads", "vehicle": "Bajaj Pulsar 150"}},
-    {"name": "check_stock", "arguments": {"skus": ["BRK-1044"]}}
-  ],
-  "actions": []
-}
+
+The response includes `reply`, `cited_skus`, `tool_calls`, and `actions`. The supported tool names are exactly `search_parts`, `check_stock`, and `create_draft_order`. Prices and stock must be grounded in current database values, and the assistant may create draft orders only.
+
+## Forecasting and reorder logic
+
+### Forecast horizon
+
+The contract requires one forecast row per SKU in `data/lead_times.csv` for each of these weeks:
+
+- `2026-09-28`
+- `2026-10-05`
+- `2026-10-12`
+- `2026-10-19`
+
+This is 40 SKUs × 4 weeks = 160 rows. These dates are fixed by the assignment contract and should not be changed.
+
+### Regenerate forecasts and run backtesting
+
+```bash
+python ml/generate_forecast.py
 ```
 
-### 4. Reorder Suggestions (`GET /api/reorder-suggestions/`)
-**Response (200 OK):**
-```json
-{
-  "results": [
-    {
-      "sku": "FIL-1016",
-      "current_stock": 20,
-      "lead_time_weeks": 3,
-      "lead_time_demand": 117.4,
-      "safety_stock": 25,
-      "reorder_point": 142.4,
-      "reorder_qty": 123
-    }
-  ]
-}
+The reported chronological rolling-origin backtest metrics are:
+
+| Method | WAPE | MAE | RMSE |
+|---|---:|---:|---:|
+| Last value baseline | 32.88% | 11.45 | 17.64 |
+| Recent 4-week average baseline | 26.80% | 9.34 | 14.50 |
+| Same week last year baseline | 32.88% | 11.45 | 17.70 |
+| Proposed decomposition + promotion uplift + festival features | **20.06%** | **6.99** | **9.94** |
+
+These metrics should match the latest output from `ml/generate_forecast.py` before submission. Backtesting is chronological; actual sales from the held-out forecast horizon must not be used to train or tune the submitted forecast.
+
+### Reorder calculation
+
+`GET /api/reorder-suggestions/` uses the exact formula in `API_CONTRACT.md` and reads current stock from the database at request time:
+
+1. `L` is the supplier lead time in weeks for the SKU.
+2. `lead_time_demand` is the sum of forecast units for the first `L` forecast weeks.
+3. `sigma` is the sample standard deviation (`n - 1`) of units sold over the most recent 12 available sales weeks, or all available weeks if fewer than 12 exist.
+4. `safety_stock = ceil(1.65 × sigma × sqrt(L))`.
+5. `reorder_point = lead_time_demand + safety_stock`.
+6. `reorder_qty = max(0, ceil(reorder_point - current_stock))`.
+
+The forecast endpoint returns the same four values recorded in `ml/forecast.csv`. Unknown or non-forecast SKUs must return the contract-required `404` response.
+
+## Verification and tests
+
+Run tests from the repository root. The following results are the recorded local results for this implementation; rerun the commands after any code change and before submission.
+
+### Django test suite
+
+```bash
+python manage.py test core --keepdb
 ```
 
----
+**Recorded result:** 37 tests passed (`OK`). The reported breakdown is:
 
-## 6. Assumptions
+- 13 A1 tests for core endpoints, validation, duplicate handling, price validation, and idempotency.
+- 16 assistant tests for tool-calling loops, session isolation and memory, text normalization, provider resilience, and prompt-injection defense.
+- 8 forecasting/reorder tests for CSV schema and coverage, forecast API parity, not-found behavior, live-stock suggestions, and the contract formula.
 
-* **Track Scope:** Following contract §2 for Track `aiml`, components A2 (Order confirmation engine), B (Supplier sync), and E (Frontend UI) are optional and intentionally not attempted.
-* **LLM Provider:** Groq with `openai/gpt-oss-120b` was used for active development and verified natively via HTTP tool-calling loop without third-party proprietary client dependencies. Keys are dynamically read from the standard environment variables (`GROQ_API_KEY`, `GEMINI_API_KEY`, etc.).
-* **Catalogue & Demand Data:** The 600 catalogue items and 25 dealers are loaded from `data/catalogue.csv` and `data/dealers.csv`. The 40 forecast SKUs are defined in `data/lead_times.csv`. Future promotions for the 4 forecast weeks are sourced directly from `data/promo_calendar.csv`.
-* **Database & Concurrency:** PostgreSQL is the only supported database. Sequential order numbers use Asia/Kolkata date formatting and PostgreSQL row locks (`select_for_update`) for concurrency safety.
+These counts and results should match the latest output from your own test run before submission.
 
----
+### Assignment smoke test
 
-## 7. Video Walkthrough Link
+With the Django server running in a separate terminal:
 
-* **Video Walkthrough URL:** `[Placeholder: Insert unlisted YouTube/Loom walkthrough video link here prior to final submission]`
-* **Walkthrough Coverage:** 5-minute concise demonstration of repository layout, `python manage.py runserver` launch, `smoke_test.py` run (10/10 checks), live Groq tool calling in Dealer Assistant, and forecast/reorder suggestions endpoint inspection.
+```bash
+python smoke_test.py --base-url http://localhost:8000 --track aiml
+```
+
+**Recorded result:** 10/10 contract-basic checks passed. The smoke test checks API response shapes and forecast-file structure; it is not a substitute for the full automated tests or the hidden grader.
+
+### Recommended final checks
+
+```bash
+python manage.py check
+python manage.py makemigrations --check --dry-run
+python manage.py test core --keepdb
+```
+
+Then start the server and rerun `smoke_test.py`. Also verify the Git working tree and ensure no real secrets are tracked.
+
+## Security notes
+
+- Never commit `.env`, the real `GROQ_API_KEY`, database passwords, or a production `DJANGO_SECRET_KEY`.
+- Keep `.env.example` limited to placeholder values.
+- PostgreSQL is required by the assignment; SQLite must not be used as a replacement.
+- Catalogue names and descriptions are untrusted data, not instructions for the assistant.
+- API validation and business rules must be enforced server-side, not delegated to the LLM.
+
+## Submission video
+
+The assignment requires a five-minute video walkthrough that demonstrates the implementation in your own voice, without slides. Recommended coverage:
+
+1. Briefly explain the A1, C, and D architecture.
+2. Show the backend models and a draft-order request.
+3. Demonstrate the Groq tool-calling flow from the dealer's question to the final reply.
+4. Show a real DRAFT order and confirm that creating the draft does not reduce stock.
+5. Show the four-week forecast and reorder suggestions.
+6. Show the test results and summarize the forecasting validation approach.
+
+**Before submission:** replace the line below with the actual accessible, unlisted video URL. Do not leave the placeholder in the final repository.
+
+`TODO: Add the unlisted five-minute YouTube, Loom, or Google Drive walkthrough URL.`
