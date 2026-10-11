@@ -269,3 +269,54 @@ class BackendCoreA1Tests(TestCase):
         res3 = self.client.post("/api/orders/", diff_payload, format="json", **headers)
         self.assertEqual(res3.status_code, 409)
         self.assertEqual(res3.json()["error"]["code"], "IDEMPOTENCY_CONFLICT")
+
+    def test_product_price_validation_decimals(self):
+        # More than 2 decimal places -> 400 VALIDATION_ERROR
+        bad_payload = {
+            "sku": "BAD-DEC-1",
+            "name": "Bad Decimal Part",
+            "category": "Accessories",
+            "brand": "Generic",
+            "vehicle_fitment": "Universal",
+            "price": "199.999",
+            "description": "Too many decimals",
+        }
+        res = self.client.post("/api/products/", bad_payload, format="json")
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.json()["error"]["code"], "VALIDATION_ERROR")
+
+    def test_draft_order_uses_updated_catalogue_price(self):
+        # Update product price from 1500.00 to 1800.00
+        patch_res = self.client.patch("/api/products/TST-1001/", {"price": "1800.00"}, format="json")
+        self.assertEqual(patch_res.status_code, 200)
+
+        # Create new draft order
+        order_payload = {
+            "dealer_id": self.dealer.id,
+            "items": [{"sku": "TST-1001", "quantity": 1}],
+        }
+        res = self.client.post("/api/orders/", order_payload, format="json")
+        self.assertEqual(res.status_code, 201)
+        data = res.json()
+        item = data["items"][0]
+        self.assertEqual(item["unit_price"], "1800.00")
+        self.assertEqual(item["line_subtotal"], "1800.00")
+        self.assertEqual(item["line_tax"], "324.00")
+        self.assertEqual(item["line_total"], "2124.00")
+
+    def test_seed_data_idempotency_twice(self):
+        from django.core.management import call_command
+
+        # Run seed_data command twice
+        call_command("seed_data")
+        prod_count_1 = Product.objects.count()
+        dealer_count_1 = Dealer.objects.count()
+
+        call_command("seed_data")
+        prod_count_2 = Product.objects.count()
+        dealer_count_2 = Dealer.objects.count()
+
+        self.assertEqual(prod_count_1, prod_count_2)
+        self.assertEqual(dealer_count_1, dealer_count_2)
+        self.assertGreaterEqual(prod_count_1, 600)
+        self.assertGreaterEqual(dealer_count_1, 25)

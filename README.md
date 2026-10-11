@@ -88,10 +88,10 @@ python manage.py runserver 0.0.0.0:8000 --noreload
 ```bash
 python manage.py test core --keepdb
 ```
-**Result:** 22/22 tests passed (OK).
-* 10 tests for A1 core endpoints, validation errors, duplicate keys (409), and idempotency.
-* 8 tests for C assistant tools, multi-step LLM tool-calling loops, session isolation, and prompt injection defense.
-* 4 tests for D forecast schema, 160-row count, 4-week date horizon, live-stock reorder suggestions, and exact contract formula.
+**Result:** 37/37 tests passed (OK).
+* 13 tests for A1 core endpoints, validation errors, duplicate keys (409), price validations, and idempotency.
+* 16 tests for C assistant tools, multi-step LLM tool-calling loops, session isolation, session memory, mojibake normalization, provider resilience, and prompt injection defense.
+* 8 tests for D forecast schema, 160-row count, 4-week date horizon, exact CSV parity, non-forecast 404, live-stock reorder suggestions, and exact contract formula.
 
 ### B. Smoke Test Verification
 ```bash
@@ -213,5 +213,16 @@ python ml/generate_forecast.py
 
 ---
 
-## 6. Video Walkthrough Link
-* Status: Pending recording by user.
+## 6. Assumptions
+
+* **Track Scope:** Following contract §2 for Track `aiml`, components A2 (Order confirmation engine), B (Supplier sync), and E (Frontend UI) are optional and intentionally not attempted.
+* **LLM Provider:** Groq with `openai/gpt-oss-120b` was used for active development and verified natively via HTTP tool-calling loop without third-party proprietary client dependencies. Keys are dynamically read from the standard environment variables (`GROQ_API_KEY`, `GEMINI_API_KEY`, etc.).
+* **Catalogue & Demand Data:** The 600 catalogue items and 25 dealers are loaded from `data/catalogue.csv` and `data/dealers.csv`. The 40 forecast SKUs are defined in `data/lead_times.csv`. Future promotions for the 4 forecast weeks are sourced directly from `data/promo_calendar.csv`.
+* **Database & Concurrency:** PostgreSQL is the only supported database. Sequential order numbers use Asia/Kolkata date formatting and PostgreSQL row locks (`select_for_update`) for concurrency safety.
+
+---
+
+## 7. Video Walkthrough Link
+
+* **Video Walkthrough URL:** `[Placeholder: Insert unlisted YouTube/Loom walkthrough video link here prior to final submission]`
+* **Walkthrough Coverage:** 5-minute concise demonstration of repository layout, `python manage.py runserver` launch, `smoke_test.py` run (10/10 checks), live Groq tool calling in Dealer Assistant, and forecast/reorder suggestions endpoint inspection.

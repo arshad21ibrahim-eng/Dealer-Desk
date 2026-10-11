@@ -116,3 +116,96 @@ class ForecastAndReorderTests(TestCase):
         item3 = next(it for it in res3["results"] if it["sku"] == self.fsku)
         self.assertEqual(item3["current_stock"], 0)
         self.assertEqual(item3["reorder_qty"], math.ceil(item3["reorder_point"]))
+
+    def test_forecast_endpoint_returns_exact_csv_values(self):
+        csv_rows = []
+        with open(self.forecast_path, "r", encoding="utf-8") as f:
+            for r in csv.DictReader(f):
+                if r["sku"].strip() == self.fsku:
+                    csv_rows.append({
+                        "week_start": r["week_start"].strip(),
+                        "forecast_units": float(r["forecast_units"].strip()),
+                    })
+
+        res = self.client.get(f"/api/forecast/{self.fsku}/")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertEqual(data["sku"], self.fsku)
+        self.assertEqual(data["forecast"], csv_rows)
+
+    def test_forecast_endpoint_non_forecast_sku_in_catalogue_returns_404(self):
+        # Create a valid catalogue product that is NOT one of the 40 forecast SKUs
+        non_forecast_sku = "CAT-NONFORECAST-01"
+        Product.objects.create(
+            sku=non_forecast_sku,
+            name="Non Forecast Part",
+            category="Accessories",
+            brand="Generic",
+            vehicle_fitment="Universal",
+            price="999.00",
+            stock=10,
+        )
+
+        res = self.client.get(f"/api/forecast/{non_forecast_sku}/")
+        self.assertEqual(res.status_code, 404)
+        err = res.json().get("error", {})
+        self.assertEqual(err.get("code"), "NOT_FOUND")
+
+    def test_reorder_formula_exact_calculation_against_data_files(self):
+        import statistics
+
+        sales_history_path = settings.DATA_DIR / "sales_history.csv"
+
+        # Read lead time L
+        L = None
+        with open(self.lead_times_path, "r", encoding="utf-8") as f:
+            for r in csv.DictReader(f):
+                if r["sku"].strip() == self.fsku:
+                    L = int(r["lead_time_weeks"].strip())
+                    break
+        self.assertIsNotNone(L)
+
+        # Read forecast units for first L weeks
+        forecast_weeks = []
+        with open(self.forecast_path, "r", encoding="utf-8") as f:
+            for r in csv.DictReader(f):
+                if r["sku"].strip() == self.fsku:
+                    forecast_weeks.append((r["week_start"].strip(), float(r["forecast_units"].strip())))
+        forecast_weeks.sort(key=lambda x: x[0])
+        expected_ltd = round(sum(units for _, units in forecast_weeks[:L]), 1)
+
+        # Read sales history for SKU and calculate sigma over most recent 12 weeks
+        sales = []
+        with open(sales_history_path, "r", encoding="utf-8") as f:
+            for r in csv.DictReader(f):
+                if r["sku"].strip() == self.fsku:
+                    sales.append((r["week_start"].strip(), float(r["units_sold"].strip())))
+        sales.sort(key=lambda x: x[0])
+        recent_12 = [u for _, u in sales[-12:]]
+        sigma = statistics.stdev(recent_12) if len(recent_12) > 1 else 0.0
+
+        expected_safety_stock = math.ceil(1.65 * sigma * math.sqrt(L))
+        expected_reorder_point = round(expected_ltd + expected_safety_stock, 1)
+
+        prod = Product.objects.get(sku=self.fsku)
+        expected_reorder_qty = max(0, math.ceil(expected_reorder_point - prod.stock))
+
+        res = self.client.get("/api/reorder-suggestions/").json()
+        item = next(it for it in res["results"] if it["sku"] == self.fsku)
+
+        self.assertEqual(item["lead_time_weeks"], L)
+        self.assertEqual(item["lead_time_demand"], expected_ltd)
+        self.assertEqual(item["safety_stock"], expected_safety_stock)
+        self.assertEqual(item["reorder_point"], expected_reorder_point)
+        self.assertEqual(item["reorder_qty"], expected_reorder_qty)
+
+    def test_reorder_suggestions_contains_all_40_forecast_skus_in_order(self):
+        lead_skus = []
+        with open(self.lead_times_path, "r", encoding="utf-8") as f:
+            for r in csv.DictReader(f):
+                lead_skus.append(r["sku"].strip())
+
+        res = self.client.get("/api/reorder-suggestions/").json()
+        returned_skus = [it["sku"] for it in res["results"]]
+        self.assertEqual(len(returned_skus), 40)
+        self.assertEqual(returned_skus, lead_skus)
