@@ -341,6 +341,5 @@ The assignment requires a five-minute video walkthrough that demonstrates the im
 5. Show the four-week forecast and reorder suggestions.
 6. Show the test results and summarize the forecasting validation approach.
 
-**Before submission:** replace the line below with the actual accessible, unlisted video URL. Do not leave the placeholder in the final repository.
+URL:https://drive.google.com/file/d/1P4kLZdHCQIvs1nsqH6Gn9PGgMcbnw3j5/view?usp=drivesdk
 
-`TODO: Add the unlisted five-minute YouTube, Loom, or Google Drive walkthrough URL.`
